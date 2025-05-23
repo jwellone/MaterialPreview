@@ -172,8 +172,6 @@ namespace jwelloneEditor
 
         void OnGUI()
         {
-            var width = (int)(position.size.x / 1.5f);
-
             EditorGUI.BeginChangeCheck();
 
             GUILayout.BeginHorizontal();
@@ -206,48 +204,17 @@ namespace jwelloneEditor
 
             EditorGUILayout.BeginHorizontal();
 
+            var width = (int)(position.size.x / 1.5f);
+            var height = (int)(position.size.y - 32);
+
             if ((!_materialEditor?.isPreviewTypeForPlane ?? false) || _destTexture == null)
             {
-                var height = position.size.y - 32;
                 var rect = GUILayoutUtility.GetRect(width, height, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
                 _materialEditor?.DefaultPreviewGUI(rect);
             }
             else if (_destTexture != null)
             {
-                var textureRect = Rect.zero;
-                if (_destTexture.height > _destTexture.width)
-                {
-                    var rcWidth = width * _destTexture.width / _destTexture.height;
-                    var halfRcWidth = (width - rcWidth) / 2f;
-                    GUILayout.Space(halfRcWidth);
-                    textureRect = GUILayoutUtility.GetRect(rcWidth, width, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
-                    GUILayout.Space(halfRcWidth);
-                }
-                else
-                {
-                    textureRect = GUILayoutUtility.GetRect(width, _destTexture.height * width / _destTexture.width, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
-                }
-
-                GUI.BeginGroup(textureRect);
-                {
-                    var xLoop = Mathf.RoundToInt(textureRect.width);
-                    var yLoop = Mathf.RoundToInt(textureRect.height);
-                    var bgWidth = _textureBg!.width;
-                    var bgHeight = _textureBg!.height;
-                    var bgRect = new Rect(0, 0, bgWidth, bgHeight);
-                    for (var y = 0; y < yLoop; y += bgHeight)
-                    {
-                        for (var x = 0; x < xLoop; x += bgWidth)
-                        {
-                            bgRect.x = x;
-                            bgRect.y = y;
-                            GUI.DrawTexture(bgRect, _textureBg);
-                        }
-                    }
-                }
-                GUI.EndGroup();
-
-                GUI.DrawTexture(textureRect, _destTexture);
+                DrawDestTexture(width, height);
             }
 
             if (_material == null)
@@ -336,6 +303,58 @@ namespace jwelloneEditor
             {
                 DestroyImmediate(texture);
             }
+        }
+
+        void DrawDestTexture(int width, int height)
+        {
+            var texWidth = (float)((width > height) ? height : width);
+            var texHeight = texWidth * texWidth / texWidth;
+
+            if (_destTexture!.width > _destTexture.height)
+            {
+                texHeight *= _destTexture.height / (float)_destTexture.width;
+            }
+            else
+            {
+                texWidth *= _destTexture.width / (float)_destTexture.height;
+            }
+
+            var spaceWidth = (width - texWidth) / 2f;
+            GUILayout.BeginHorizontal("box");
+            GUILayout.Space(spaceWidth);
+
+            var spaceHeight = (height - texHeight) / 2f;
+            GUILayout.BeginVertical();
+            GUILayout.Space(spaceHeight);
+
+            var textureRect = GUILayoutUtility.GetRect(texWidth, texHeight, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
+
+            GUI.BeginGroup(textureRect);
+            {
+                var xLoop = Mathf.RoundToInt(textureRect.width);
+                var yLoop = Mathf.RoundToInt(textureRect.height);
+                var bgWidth = _textureBg!.width;
+                var bgHeight = _textureBg.height;
+                var bgRect = new Rect(0, 0, bgWidth, bgHeight);
+                for (var y = 0; y < yLoop; y += bgHeight)
+                {
+                    for (var x = 0; x < xLoop; x += bgWidth)
+                    {
+                        bgRect.x = x;
+                        bgRect.y = y;
+                        GUI.DrawTexture(bgRect, _textureBg);
+                    }
+                }
+            }
+            GUI.EndGroup();
+
+            GUI.DrawTexture(textureRect, _destTexture);
+
+            GUILayout.Space(spaceHeight);
+            GUILayout.EndVertical();
+
+            GUILayout.Space(spaceWidth);
+            GUILayout.EndHorizontal();
         }
 
         void Blit(Texture2D? source, Texture2D? dest, Material? material)
