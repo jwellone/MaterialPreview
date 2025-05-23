@@ -1,8 +1,8 @@
+using System;
 using System.IO;
 using System.Reflection;
 using UnityEngine;
 using UnityEditor;
-using System;
 
 #nullable enable
 
@@ -12,9 +12,24 @@ namespace jwelloneEditor
     {
         class CustomMaterialEditor : MaterialEditor
         {
-            static Type _type = typeof(MaterialEditor);
+            static readonly Type _type = typeof(MaterialEditor);
             MethodInfo? _miGetPreviewType;
-            readonly GUIStyle _bg = new();
+            PreviewRenderUtility? _cachePreviewRenderUtility;
+
+            PreviewRenderUtility _previewRenderUtility
+            {
+                get
+                {
+                    if (_cachePreviewRenderUtility != null)
+                    {
+                        return _cachePreviewRenderUtility;
+                    }
+
+                    var mi = _type.GetMethod("GetPreviewRendererUtility", (BindingFlags.NonPublic | BindingFlags.Static));
+                    _cachePreviewRenderUtility = (PreviewRenderUtility)mi.Invoke(null, null);
+                    return _cachePreviewRenderUtility;
+                }
+            }
 
             bool isSupportRenderingPreview
             {
@@ -25,6 +40,8 @@ namespace jwelloneEditor
                 }
             }
 
+            Light[] lights => _previewRenderUtility?.lights ?? Array.Empty<Light>();
+
             public bool isPreviewTypeForPlane
             {
                 get
@@ -34,15 +51,56 @@ namespace jwelloneEditor
                 }
             }
 
+            Camera camera => _previewRenderUtility.camera;
+
             CustomMaterialEditor()
             {
                 var pi = _type.GetProperty("firstInspectedEditor", BindingFlags.NonPublic | BindingFlags.Instance);
                 pi.SetValue(this, true);
             }
 
+            public override void OnInspectorGUI()
+            {
+                GUILayout.BeginVertical();
+                DrawHeader();
+                base.OnInspectorGUI();
+                GUILayout.EndVertical();
+            }
+
             public void DefaultPreviewGUI(Rect rc)
             {
-                DefaultPreviewGUI(rc, _bg);
+                DefaultPreviewGUI(rc, null);
+
+                if (Event.current.type == EventType.ScrollWheel && rc.Contains(Event.current.mousePosition))
+                {
+                    camera.fieldOfView += Event.current.delta.y * 0.1f;
+                    Event.current.Use();
+                }
+            }
+
+            public void PreviewSettingsGUI()
+            {
+                if (isPreviewTypeForPlane || !isSupportRenderingPreview)
+                {
+                    return;
+                }
+
+                DefaultPreviewSettingsGUI();
+
+                var targetLights = lights;
+                for (var i = 0; i < targetLights.Length; ++i)
+                {
+                    EditorGUILayout.BeginHorizontal("box", GUILayout.Height(18));
+                    EditorGUILayout.LabelField($"Light{i}", GUILayout.Width(40), GUILayout.Height(14));
+                    var color = targetLights[i].color;
+                    targetLights[i].color = EditorGUILayout.ColorField(color, GUILayout.Width(28), GUILayout.Height(14));
+                    EditorGUILayout.EndHorizontal();
+                }
+
+                EditorGUILayout.BeginHorizontal("box", GUILayout.Height(18));
+                EditorGUILayout.LabelField("Bg", GUILayout.Width(20), GUILayout.Height(14));
+                camera.backgroundColor = EditorGUILayout.ColorField(camera.backgroundColor, GUILayout.Width(28), GUILayout.Height(14));
+                EditorGUILayout.EndHorizontal();
             }
 
             public Texture2D? RenderStaticPreview(int width, int height)
@@ -52,21 +110,30 @@ namespace jwelloneEditor
                     return null;
                 }
 
-                Init();
-
-                var mi = _type.GetMethod("GetPreviewRendererUtility", (BindingFlags.NonPublic | BindingFlags.Static));
-                var previewRendererUtility = (PreviewRenderUtility)mi.Invoke(null, null);
-
-                EditorUtility.SetCameraAnimateMaterials(previewRendererUtility.camera, animate: true);
-                previewRendererUtility.BeginStaticPreview(new Rect(0f, 0f, width, height));
-
-                mi = _type.GetMethod("StreamRenderResources", (BindingFlags.NonPublic | BindingFlags.Instance));
+                var mi = _type.GetMethod("Init", (BindingFlags.NonPublic | BindingFlags.Instance));
                 mi.Invoke(this, null);
 
-                mi = _type.GetMethod("DoRenderPreview", (BindingFlags.NonPublic | BindingFlags.Instance));
-                mi.Invoke(this, new object[] { previewRendererUtility, false });
+                var r = new Rect(0, 0, width, height);
+                _previewRenderUtility.BeginPreview(r, null);
 
-                return previewRendererUtility.EndStaticPreview();
+                mi = _type.GetMethod("DoRenderPreview", (BindingFlags.NonPublic | BindingFlags.Instance));
+                mi.Invoke(this, new object[] { _previewRenderUtility, false });
+
+                var sourceRT = (RenderTexture)_previewRenderUtility.EndPreview();
+                var destRT = RenderTexture.GetTemporary(width, height, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm);
+                var pi = typeof(EditorGUIUtility).GetProperty("GUITextureBlit2SRGBMaterial", BindingFlags.NonPublic | BindingFlags.Static);
+                Graphics.Blit(sourceRT, destRT, (Material)pi.GetValue(null));
+
+                var texture = new Texture2D(width, height, TextureFormat.ARGB32, false, false);
+                var tmpRT = RenderTexture.active;
+                RenderTexture.active = destRT;
+                texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                texture.Apply();
+
+                RenderTexture.ReleaseTemporary(destRT);
+                RenderTexture.active = tmpRT;
+
+                return texture;
             }
         }
 
@@ -78,8 +145,8 @@ namespace jwelloneEditor
         [NonSerialized] Texture2D? _destTexture;
         [NonSerialized] CustomMaterialEditor? _materialEditor;
 
-        [MenuItem("jwellone/Window/Material Preview")]
-        static void Init()
+        [MenuItem("Tools/jwellone/window/Material Preview")]
+        static void ShowWindow()
         {
             var window = GetWindow(typeof(MaterialPreviewWindow));
             window.titleContent = new("Material Preview");
@@ -105,25 +172,19 @@ namespace jwelloneEditor
 
         void OnGUI()
         {
-            var width = (int)(position.size.x / 2f);
-            var margin = 36;
-            minSize = new Vector2(512, width + margin);
-            maxSize = new Vector2(maxSize.x, width + margin);
+            var width = (int)(position.size.x / 1.5f);
 
             EditorGUI.BeginChangeCheck();
 
             GUILayout.BeginHorizontal();
 
-            if (!_materialEditor?.isPreviewTypeForPlane ?? false)
-            {
-                _materialEditor?.DefaultPreviewSettingsGUI();
-            }
+            _materialEditor?.PreviewSettingsGUI();
 
             GUILayout.FlexibleSpace();
 
             _sourceTexture = (Texture2D)EditorGUILayout.ObjectField(_sourceTexture, typeof(Texture2D), false);
 
-            if (GUILayout.Button("リセット", GUILayout.Width(54)))
+            if (GUILayout.Button("Reset", GUILayout.Width(54)))
             {
                 _shader = _material?.shader ?? Shader.Find("UI/Default");
                 DestroyDestTexture();
@@ -131,9 +192,9 @@ namespace jwelloneEditor
                 DestroyMaterialEditor();
             }
 
-            if (GUILayout.Button("保存", GUILayout.Width(54)))
+            if (GUILayout.Button("Save", GUILayout.Width(54)))
             {
-                var filePath = EditorUtility.SaveFilePanel("Preview保存", Application.dataPath + "/../", "", ".png");
+                var filePath = EditorUtility.SaveFilePanel("Preview Save", Application.dataPath + "/../", "", ".png");
                 Save(filePath);
             }
 
@@ -147,7 +208,8 @@ namespace jwelloneEditor
 
             if ((!_materialEditor?.isPreviewTypeForPlane ?? false) || _destTexture == null)
             {
-                var rect = GUILayoutUtility.GetRect(width, width, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
+                var height = position.size.y - 32;
+                var rect = GUILayoutUtility.GetRect(width, height, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
                 _materialEditor?.DefaultPreviewGUI(rect);
             }
             else if (_destTexture != null)
@@ -205,10 +267,7 @@ namespace jwelloneEditor
 
             _scrollPosition = EditorGUILayout.BeginScrollView(_scrollPosition);
 
-            GUILayout.BeginVertical();
-            _materialEditor?.DrawHeader();
             _materialEditor?.OnInspectorGUI();
-            GUILayout.EndVertical();
 
             EditorGUILayout.EndScrollView();
 
