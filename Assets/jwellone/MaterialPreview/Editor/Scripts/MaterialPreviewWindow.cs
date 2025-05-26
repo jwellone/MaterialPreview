@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using UnityEngine;
@@ -13,8 +14,11 @@ namespace jwelloneEditor
         class CustomMaterialEditor : MaterialEditor
         {
             static readonly Type _type = typeof(MaterialEditor);
+            int _replacementIndex;
             MethodInfo? _miGetPreviewType;
             PreviewRenderUtility? _cachePreviewRenderUtility;
+            readonly List<IPreivewReplacementShader> _replacements;
+            readonly string[] _replacementLabels;
 
             PreviewRenderUtility _previewRenderUtility
             {
@@ -42,6 +46,11 @@ namespace jwelloneEditor
 
             Light[] lights => _previewRenderUtility?.lights ?? Array.Empty<Light>();
 
+            IPreivewReplacementShader _currentReplacement => _replacements[_replacementIndex];
+
+            Camera _camera => _previewRenderUtility.camera;
+
+
             public bool isPreviewTypeForPlane
             {
                 get
@@ -51,12 +60,35 @@ namespace jwelloneEditor
                 }
             }
 
-            Camera camera => _previewRenderUtility.camera;
-
             CustomMaterialEditor()
             {
                 var pi = _type.GetProperty("firstInspectedEditor", BindingFlags.NonPublic | BindingFlags.Instance);
                 pi.SetValue(this, true);
+
+                _replacements = new(new IPreivewReplacementShader[]
+                {
+                    new PreviewReplacementShaderNothing(),
+                    new PreviewReplacementShaderForOverdraw(),
+                    new PreviewReplacementShaderForMips(),
+                    new PreviewReplacementShaderForTextureStreaming(),
+                    new PreviewReplacementShaderForNormals(),
+                    new PreivewReplacementShaderForChannel(PreivewReplacementShaderForChannel.eMode.R),
+                    new PreivewReplacementShaderForChannel(PreivewReplacementShaderForChannel.eMode.G),
+                    new PreivewReplacementShaderForChannel(PreivewReplacementShaderForChannel.eMode.B),
+                    new PreivewReplacementShaderForChannel(PreivewReplacementShaderForChannel.eMode.A),
+                    new PreviewReplacementShaderForMeshInfo(PreviewReplacementShaderForMeshInfo.Mode.UV0),
+                    new PreviewReplacementShaderForMeshInfo(PreviewReplacementShaderForMeshInfo.Mode.UV1),
+                    new PreviewReplacementShaderForMeshInfo(PreviewReplacementShaderForMeshInfo.Mode.VERTEXCOLOR),
+                    new PreviewReplacementShaderForMeshInfo(PreviewReplacementShaderForMeshInfo.Mode.NORMALS),
+                    new PreviewReplacementShaderForMeshInfo(PreviewReplacementShaderForMeshInfo.Mode.TANGENTS),
+                    new PreviewReplacementShaderForMeshInfo(PreviewReplacementShaderForMeshInfo.Mode.BITANGENTS)
+                });
+
+                _replacementLabels = new string[_replacements.Count];
+                for (var i = 0; i < _replacements.Count; ++i)
+                {
+                    _replacementLabels[i] = _replacements[i].displayName;
+                }
             }
 
             public override void OnInspectorGUI()
@@ -73,7 +105,7 @@ namespace jwelloneEditor
 
                 if (Event.current.type == EventType.ScrollWheel && rc.Contains(Event.current.mousePosition))
                 {
-                    camera.fieldOfView += Event.current.delta.y * 0.1f;
+                    _camera.fieldOfView += Event.current.delta.y * 0.1f;
                     Event.current.Use();
                 }
             }
@@ -99,8 +131,10 @@ namespace jwelloneEditor
 
                 EditorGUILayout.BeginHorizontal("box", GUILayout.Height(18));
                 EditorGUILayout.LabelField("Bg", GUILayout.Width(20), GUILayout.Height(14));
-                camera.backgroundColor = EditorGUILayout.ColorField(camera.backgroundColor, GUILayout.Width(28), GUILayout.Height(14));
+                _camera.backgroundColor = EditorGUILayout.ColorField(_camera.backgroundColor, GUILayout.Width(28), GUILayout.Height(14));
                 EditorGUILayout.EndHorizontal();
+
+                _replacementIndex = EditorGUILayout.Popup(_replacementIndex, _replacementLabels, new[] { GUILayout.Width(128) });
             }
 
             public Texture2D? RenderStaticPreview(int width, int height)
@@ -135,6 +169,35 @@ namespace jwelloneEditor
 
                 return texture;
             }
+
+            public void OnPreCullNotify(Camera target)
+            {
+                if (target.GetInstanceID() != _camera.GetInstanceID())
+                {
+                    return;
+                }
+
+                _currentReplacement.Draw(_camera);
+            }
+
+            public void OnPostRenderNotify(Camera target)
+            {
+                if (target.GetInstanceID() != _camera.GetInstanceID())
+                {
+                    return;
+                }
+
+                _currentReplacement.Reset(_camera);
+            }
+
+            public void Release()
+            {
+                foreach (var r in _replacements)
+                {
+                    r.Release();
+                }
+                _replacements.Clear();
+            }
         }
 
         Vector2 _scrollPosition;
@@ -160,6 +223,9 @@ namespace jwelloneEditor
                 _shader = Shader.Find("UI/Default");
             }
             _textureBg = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/jwellone/MaterialPreview/Editor/Textures/preview-bg.jpg");
+
+            Camera.onPreCull += OnPreCullNotify;
+            Camera.onPostRender += OnPostRenderNotify;
         }
 
         void OnDisable()
@@ -168,7 +234,11 @@ namespace jwelloneEditor
             DestroyDestTexture();
             DestroyMaterial();
             DestroyMaterialEditor();
+
+            Camera.onPreCull -= OnPreCullNotify;
+            Camera.onPostRender -= OnPostRenderNotify;
         }
+
 
         void OnGUI()
         {
@@ -402,9 +472,20 @@ namespace jwelloneEditor
         {
             if (_materialEditor != null)
             {
+                _materialEditor.Release();
                 DestroyImmediate(_materialEditor);
                 _materialEditor = null;
             }
+        }
+
+        void OnPreCullNotify(Camera camera)
+        {
+            _materialEditor?.OnPreCullNotify(camera);
+        }
+
+        void OnPostRenderNotify(Camera camera)
+        {
+            _materialEditor?.OnPostRenderNotify(camera);
         }
     }
 }
